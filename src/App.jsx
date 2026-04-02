@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import { InlineMath, BlockMath } from 'react-katex';
 import Tesseract from 'tesseract.js';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { curriculumData } from './curriculum';
+import { firebaseSetupNote, getFirebaseDb } from './firebase';
 
 const bots = [
   { id: 'tutor', title: 'Chatbot 1 · Gia sư định hướng' },
@@ -14,7 +16,9 @@ const initialState = {
   grade: '6',
   input: '',
   processingOcr: false,
-  history: []
+  history: [],
+  tutorSupportCount: 0,
+  lastQuestion: ''
 };
 
 const STORAGE_KEY = 'ai-eduzone-conversations-v1';
@@ -33,32 +37,107 @@ const saveHistory = (data) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 };
 
-const inferPrompt = (botId, message, subject, grade) => {
+const isEducationRelated = (message) => {
+  const text = message.toLowerCase();
+  const keywords = [
+    'toán',
+    'ngữ văn',
+    'văn',
+    'lớp',
+    'bài',
+    'bài tập',
+    'đề',
+    'phương trình',
+    'hình',
+    'thơ',
+    'đoạn văn',
+    'giải thích',
+    'học',
+    'kiến thức',
+    'latex',
+    'phân tích',
+    'chứng minh',
+    'hàm số',
+    'xác suất'
+  ];
+  return keywords.some((keyword) => text.includes(keyword));
+};
+
+
+const outOfScopeKeywords = {
+  math: {
+    6: ['đạo hàm', 'tích phân', 'logarit', 'ma trận', 'số phức', 'lượng giác'],
+    7: ['đạo hàm', 'tích phân', 'logarit', 'ma trận', 'số phức', 'lượng giác'],
+    8: ['đạo hàm', 'tích phân', 'logarit', 'ma trận', 'số phức'],
+    9: ['đạo hàm', 'tích phân', 'ma trận', 'số phức']
+  },
+  literature: {
+    6: ['phong cách ngôn ngữ báo chí', 'nghị luận xã hội chuyên sâu', 'thi pháp học'],
+    7: ['phong cách ngôn ngữ báo chí', 'thi pháp học', 'nghị luận văn học chuyên sâu'],
+    8: ['thi pháp học', 'lí luận văn học đại học'],
+    9: ['lí luận văn học đại học']
+  }
+};
+
+const isOutOfScopeByGrade = (message, subject, grade) => {
+  const text = message.toLowerCase();
+  const items = outOfScopeKeywords[subject]?.[grade] ?? [];
+  return items.find((item) => text.includes(item));
+};
+
+const nonLearningReply = {
+  who: 'AI-EduZone',
+  text: 'Mình chỉ hỗ trợ các câu hỏi học tập cho Toán/Ngữ văn THCS (lớp 6-9) theo vai trò định hướng, không giải hộ. Bạn hãy gửi đề bài hoặc phần kiến thức đang vướng nhé.'
+};
+
+const inferPrompt = (botId, message, subject, grade, supportCount = 0) => {
+  if (!isEducationRelated(message)) {
+    return nonLearningReply;
+  }
+
+  const outOfScopeTopic = isOutOfScopeByGrade(message, subject, grade);
   const curriculum = curriculumData[subject].grades[grade];
 
-  if (botId === 'tutor') {
+  if (outOfScopeTopic) {
     return {
-      role: 'AI-EduZone Tutor',
-      text: `Mình sẽ không đưa đáp án trực tiếp. Với ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}, bạn hãy thử làm theo 3 bước:\n1) Xác định dữ kiện và yêu cầu đề.\n2) Chọn phương pháp phù hợp chương trình GDPT 2018:\n- ${curriculum.join('\n- ')}\n3) Viết lời giải nháp và tự kiểm tra.\n\nGợi ý hướng đi cho câu hỏi của bạn: “${message.slice(0, 240)}”.\n\nNếu muốn, hãy yêu cầu mức hỗ trợ 2 hoặc 3 để mình tăng độ chi tiết.`
+      who: 'AI-EduZone',
+      text: `Nội dung “${outOfScopeTopic}” đang vượt khung chương trình ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}. Mình sẽ không trả lời vượt chương trình. Hãy quay lại các mục trọng tâm lớp ${grade}:\n- ${curriculum.join('\n- ')}`
+    };
+  }
+
+  if (botId === 'tutor') {
+    const detailedHint =
+      supportCount > 0
+        ? `\n\nMức hỗ trợ ${supportCount + 1}:\n- Tách đề thành dữ kiện / yêu cầu.\n- Viết 1 bước ngắn em làm được trước.\n- Tự kiểm bằng cách thay lại kết quả vào đề.\n- Nếu là Toán, hãy trình bày công thức bằng LaTeX rõ ràng.`
+        : '';
+
+    return {
+      who: 'AI-EduZone Tutor',
+      text: `Mình sẽ không đưa đáp án trực tiếp. Với ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}, bạn hãy thử làm theo 3 bước:\n1) Xác định dữ kiện và yêu cầu đề.\n2) Chọn phương pháp phù hợp chương trình GDPT 2018:\n- ${curriculum.join('\n- ')}\n3) Viết lời giải nháp và tự kiểm tra.\n\nGợi ý hướng đi cho câu hỏi của bạn: “${message.slice(0, 240)}”.${detailedHint}`
     };
   }
 
   if (botId === 'detector') {
     return {
-      role: 'AI-EduZone AI-check',
-      text: `Phân tích nghi ngờ can thiệp AI cho ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}:\n- Độ đều văn phong bất thường: Trung bình\n- Dấu hiệu thiếu bước tư duy cá nhân: Có thể có\n- Mức phù hợp chuẩn kiến thức lớp ${grade}: cần đối chiếu theo các yêu cầu:\n- ${curriculum.join('\n- ')}\n\nKhuyến nghị: yêu cầu học sinh giải thích lại từng bước bằng ngôn ngữ của mình.`
+      who: 'AI-EduZone AI-check',
+      text: `Phân tích nghi ngờ can thiệp AI cho ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}:\n- Độ đều văn phong bất thường: Trung bình\n- Dấu hiệu thiếu bước tư duy cá nhân: Có thể có\n- Mức phù hợp chuẩn kiến thức lớp ${grade}: cần đối chiếu theo các yêu cầu:\n- ${curriculum.join('\n- ')}\n\nKhuyến nghị: yêu cầu học sinh giải thích lại từng bước bằng ngôn ngữ của mình. Không phân tích vượt yêu cầu cần đạt của lớp đã chọn.`
     };
   }
 
   return {
-    role: 'AI-EduZone Probe',
-    text: `Để kiểm tra bạn đã hiểu bài chưa, hãy trả lời nhanh 3 câu truy vấn ngược (${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}):\n1) Em đang vướng nhất ở khâu nào?\n2) Vì sao em chọn cách làm hiện tại?\n3) Nếu thay dữ kiện/chủ đề thì em điều chỉnh thế nào?\n\nĐối chiếu trọng tâm chương trình:\n- ${curriculum.join('\n- ')}`
+    who: 'AI-EduZone Probe',
+    text: `Để kiểm tra bạn đã hiểu bài chưa, hãy trả lời nhanh 3 câu truy vấn ngược (${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}):\n1) Em đang vướng nhất ở khâu nào?\n2) Vì sao em chọn cách làm hiện tại?\n3) Nếu thay dữ kiện/chủ đề thì em điều chỉnh thế nào?\n\nĐối chiếu trọng tâm chương trình (không trả lời vượt khung lớp đã chọn):\n- ${curriculum.join('\n- ')}`
   };
 };
 
 function App() {
   const saved = useMemo(() => loadHistory(), []);
+  const db = useMemo(() => getFirebaseDb(), []);
   const [activeBot, setActiveBot] = useState('tutor');
+  const [firebaseLoading, setFirebaseLoading] = useState(false);
+  const [firebaseMessage, setFirebaseMessage] = useState(firebaseSetupNote);
+  const [studentId, setStudentId] = useState('student-demo-001');
+
   const [state, setState] = useState(() => ({
     tutor: saved.tutor ?? { ...initialState },
     detector: saved.detector ?? { ...initialState },
@@ -83,12 +162,33 @@ function App() {
 
   const onSend = () => {
     if (!botState.input.trim()) return;
-    const userMessage = { who: 'Bạn', text: botState.input.trim() };
-    const botMessage = inferPrompt(activeBot, botState.input.trim(), botState.subject, botState.grade);
+    const question = botState.input.trim();
+    const userMessage = { who: 'Bạn', text: question };
+    const botMessage = inferPrompt(activeBot, question, botState.subject, botState.grade, 0);
 
-    updateBotState({
+    const commonUpdates = {
       input: '',
       history: [...botState.history, userMessage, botMessage]
+    };
+
+    if (activeBot === 'tutor') {
+      updateBotState({ ...commonUpdates, tutorSupportCount: 0, lastQuestion: question });
+      return;
+    }
+
+    updateBotState(commonUpdates);
+  };
+
+  const onNeedMoreHelp = () => {
+    if (activeBot !== 'tutor' || !botState.lastQuestion) return;
+    const nextSupportCount = botState.tutorSupportCount + 1;
+    if (nextSupportCount > 2) return;
+
+    const tutorMessage = inferPrompt('tutor', botState.lastQuestion, botState.subject, botState.grade, nextSupportCount);
+
+    updateBotState({
+      tutorSupportCount: nextSupportCount,
+      history: [...botState.history, tutorMessage]
     });
   };
 
@@ -100,6 +200,89 @@ function App() {
       processingOcr: false,
       input: `${botState.input}\n${data.text}`.trim()
     });
+  };
+
+  const syncToFirebase = async () => {
+    if (!db) {
+      setFirebaseMessage('Thiếu cấu hình Firebase. Hãy thêm VITE_FIREBASE_* vào file .env.');
+      return;
+    }
+    if (!studentId.trim()) {
+      setFirebaseMessage('Vui lòng nhập studentId trước khi đồng bộ.');
+      return;
+    }
+
+    setFirebaseLoading(true);
+    try {
+      await Promise.all(
+        bots.map((bot) => {
+          const ref = doc(db, 'students', studentId.trim(), 'conversations', bot.id);
+          return setDoc(
+            ref,
+            {
+              botId: bot.id,
+              subject: state[bot.id].subject,
+              grade: state[bot.id].grade,
+              history: state[bot.id].history,
+              tutorSupportCount: state[bot.id].tutorSupportCount ?? 0,
+              lastQuestion: state[bot.id].lastQuestion ?? '',
+              updatedAt: serverTimestamp()
+            },
+            { merge: true }
+          );
+        })
+      );
+      setFirebaseMessage('Đã đồng bộ hội thoại lên Firebase thành công.');
+    } catch (error) {
+      setFirebaseMessage(`Đồng bộ thất bại: ${error.message}`);
+    } finally {
+      setFirebaseLoading(false);
+    }
+  };
+
+  const loadFromFirebase = async () => {
+    if (!db) {
+      setFirebaseMessage('Thiếu cấu hình Firebase. Không thể tải hội thoại cloud.');
+      return;
+    }
+    if (!studentId.trim()) {
+      setFirebaseMessage('Vui lòng nhập studentId trước khi tải dữ liệu.');
+      return;
+    }
+
+    setFirebaseLoading(true);
+    try {
+      const entries = await Promise.all(
+        bots.map(async (bot) => {
+          const ref = doc(db, 'students', studentId.trim(), 'conversations', bot.id);
+          const snap = await getDoc(ref);
+          return [bot.id, snap.exists() ? snap.data() : null];
+        })
+      );
+
+      setState((prev) => {
+        const next = { ...prev };
+        for (const [botId, cloud] of entries) {
+          if (!cloud) continue;
+          next[botId] = {
+            ...next[botId],
+            subject: cloud.subject ?? next[botId].subject,
+            grade: cloud.grade ?? next[botId].grade,
+            history: Array.isArray(cloud.history) ? cloud.history : next[botId].history,
+            tutorSupportCount: cloud.tutorSupportCount ?? next[botId].tutorSupportCount,
+            lastQuestion: cloud.lastQuestion ?? next[botId].lastQuestion
+          };
+        }
+        saveHistory(next);
+        return next;
+      });
+
+      setFirebaseMessage('Đã tải hội thoại từ Firebase về local.');
+    } catch (error) {
+      setFirebaseMessage(`Tải dữ liệu thất bại: ${error.message}`);
+    } finally {
+      setFirebaseLoading(false);
+    }
   };
 
   return (
@@ -115,6 +298,28 @@ function App() {
           và đối chiếu chuẩn chương trình GDPT 2018 cho Toán/Ngữ văn lớp 6-9.
         </p>
       </header>
+
+      <section className="firebase-box">
+        <h3>Hội thoại đã lưu trên Firebase</h3>
+        <p>
+          {firebaseSetupNote}. Nếu bạn dùng đoạn Java Admin SDK như ví dụ serviceAccount, hãy đặt ở backend server,
+          frontend chỉ gọi API hoặc dùng Firebase Web SDK với rule bảo mật phù hợp.
+        </p>
+        <div className="firebase-actions">
+          <input
+            value={studentId}
+            onChange={(e) => setStudentId(e.target.value)}
+            placeholder="studentId (ví dụ: hs-lop8-a)"
+          />
+          <button type="button" onClick={syncToFirebase} disabled={firebaseLoading}>
+            {firebaseLoading ? 'Đang đồng bộ...' : 'Đồng bộ lên Firebase'}
+          </button>
+          <button type="button" onClick={loadFromFirebase} disabled={firebaseLoading} className="secondary">
+            Tải hội thoại từ Firebase
+          </button>
+        </div>
+        <small>{firebaseMessage}</small>
+      </section>
 
       <section className="bot-tabs">
         {bots.map((bot) => (
@@ -185,11 +390,22 @@ function App() {
           </button>
           <button
             type="button"
-            onClick={() => updateBotState({ history: [] })}
+            onClick={() =>
+              updateBotState({
+                history: [],
+                tutorSupportCount: 0,
+                lastQuestion: ''
+              })
+            }
             className="secondary"
           >
             Xoá hội thoại bot hiện tại
           </button>
+          {activeBot === 'tutor' && botState.lastQuestion && botState.tutorSupportCount < 2 && (
+            <button type="button" onClick={onNeedMoreHelp} className="help-more">
+              Em chưa làm được ({2 - botState.tutorSupportCount} lượt còn lại)
+            </button>
+          )}
         </div>
 
         <div className="history">

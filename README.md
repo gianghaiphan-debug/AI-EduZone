@@ -14,6 +14,10 @@ AI-EduZone là webapp tự học an toàn cho học sinh THCS, tích hợp 3 cha
 - Hỗ trợ nhập văn bản, OCR ảnh bài tập.
 - Hiển thị công thức Toán bằng LaTeX (KaTeX / react-katex).
 - Lưu hội thoại theo từng chatbot bằng localStorage.
+- Đồng bộ/tải lại hội thoại từ Firebase Firestore theo `studentId`.
+- Nếu câu hỏi không liên quan học tập, chatbot trả lời mặc định và nhắc phạm vi chức năng.
+- Riêng Chatbot 1 có nút **"Em chưa làm được"** sau khi đã có hướng dẫn; tối đa 2 lượt gợi ý sâu hơn cho mỗi bài tập.
+- Cả 3 chatbot đều ràng buộc theo môn/lớp và từ chối nội dung vượt khung chương trình đã chọn.
 
 ## Chạy local
 
@@ -21,6 +25,21 @@ AI-EduZone là webapp tự học an toàn cho học sinh THCS, tích hợp 3 cha
 npm install
 npm run dev
 ```
+
+## Cấu hình Firebase (Frontend Vite)
+
+Tạo file `.env`:
+
+```bash
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_MESSAGING_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
+```
+
+> Lưu ý quan trọng: đoạn Java Admin SDK kiểu `serviceAccountKey.json` chỉ nên chạy ở backend/server tin cậy, không đưa lên frontend.
 
 ## Build production
 

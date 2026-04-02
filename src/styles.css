@@ -27,6 +27,28 @@ body {
   margin-bottom: 1rem;
 }
 
+.firebase-box {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.firebase-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin: 0.6rem 0;
+}
+
+.firebase-actions input {
+  flex: 1;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0.6rem;
+  font: inherit;
+}
+
 .bot-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -36,7 +58,8 @@ body {
 
 .bot-tabs button,
 .actions button,
-.upload {
+.upload,
+.firebase-actions button {
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   padding: 0.6rem 0.8rem;
@@ -110,4 +133,9 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   font-family: inherit;
+}
+
+.help-more {
+  border-color: #7c3aed !important;
+  background: #f5f3ff !important;
 }
