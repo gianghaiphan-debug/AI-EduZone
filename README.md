@@ -29,14 +29,27 @@ npm run dev
 
 ## Kết nối API chatbot
 
-Thêm biến môi trường vào `.env`:
+### Cách 1: Dùng backend API riêng (khuyến nghị production)
 
 ```bash
+VITE_CHAT_PROVIDER=custom
 VITE_CHAT_API_BASE_URL=https://your-backend-domain
 VITE_CHAT_API_KEY=optional_token
 ```
 
-Frontend sẽ gọi `POST {VITE_CHAT_API_BASE_URL}/chat` với payload:
+Frontend sẽ gọi `POST {VITE_CHAT_API_BASE_URL}/chat`.
+
+### Cách 2: Dùng trực tiếp Gemini API (demo nhanh)
+
+```bash
+VITE_CHAT_PROVIDER=gemini
+VITE_GEMINI_API_KEY=your_google_ai_key
+VITE_GEMINI_MODEL=gemini-1.5-flash
+```
+
+> Lưu ý: gọi Gemini trực tiếp từ frontend sẽ lộ API key. Production nên đi qua backend proxy.
+
+Payload nội bộ app vẫn gồm:
 
 ```json
 {
@@ -50,6 +63,12 @@ Frontend sẽ gọi `POST {VITE_CHAT_API_BASE_URL}/chat` với payload:
 ```
 
 Nếu chưa cấu hình API, app sẽ tự động dùng fallback local (rule-based) để demo.
+
+## Biến môi trường Firebase có cần khai báo hết không?
+
+- Nếu **không dùng Firebase**: không cần khai báo biến Firebase.
+- Nếu dùng **Firebase Web SDK ở frontend**: nên khai báo đầy đủ các trường `VITE_FIREBASE_*` theo project của bạn (`apiKey`, `authDomain`, `projectId`, `storageBucket`, `messagingSenderId`, `appId`).
+- Nếu dùng **Firebase Admin SDK/service account**: chỉ dùng ở backend server, không đưa file key vào frontend.
 
 ## Build production
 
