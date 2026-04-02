@@ -13,8 +13,8 @@ AI-EduZone là webapp tự học an toàn cho học sinh THCS, tích hợp 3 cha
 - Đối chiếu nội dung theo khung chương trình GDPT 2018 (Thông tư 32).
 - Hỗ trợ nhập văn bản, OCR ảnh bài tập.
 - Hiển thị công thức Toán bằng LaTeX (KaTeX / react-katex).
-- Lưu hội thoại theo từng chatbot bằng localStorage.
-- Đồng bộ/tải lại hội thoại từ Firebase Firestore theo `studentId`.
+- Lưu trữ hội thoại dạng danh sách ở sidebar (nằm ngang với khung chat) bằng localStorage.
+- Có nút **Gửi** rõ ràng ở khu vực nhập liệu, kèm nút tạo hội thoại mới.
 - Nếu câu hỏi không liên quan học tập, chatbot trả lời mặc định và nhắc phạm vi chức năng.
 - Riêng Chatbot 1 có nút **"Em chưa làm được"** sau khi đã có hướng dẫn; tối đa 2 lượt gợi ý sâu hơn cho mỗi bài tập.
 - Cả 3 chatbot đều ràng buộc theo môn/lớp và từ chối nội dung vượt khung chương trình đã chọn.
@@ -26,20 +26,30 @@ npm install
 npm run dev
 ```
 
-## Cấu hình Firebase (Frontend Vite)
 
-Tạo file `.env`:
+## Kết nối API chatbot
+
+Thêm biến môi trường vào `.env`:
 
 ```bash
-VITE_FIREBASE_API_KEY=...
-VITE_FIREBASE_AUTH_DOMAIN=...
-VITE_FIREBASE_PROJECT_ID=...
-VITE_FIREBASE_STORAGE_BUCKET=...
-VITE_FIREBASE_MESSAGING_SENDER_ID=...
-VITE_FIREBASE_APP_ID=...
+VITE_CHAT_API_BASE_URL=https://your-backend-domain
+VITE_CHAT_API_KEY=optional_token
 ```
 
-> Lưu ý quan trọng: đoạn Java Admin SDK kiểu `serviceAccountKey.json` chỉ nên chạy ở backend/server tin cậy, không đưa lên frontend.
+Frontend sẽ gọi `POST {VITE_CHAT_API_BASE_URL}/chat` với payload:
+
+```json
+{
+  "botId": "tutor|detector|probe",
+  "subject": "math|literature",
+  "grade": "6|7|8|9",
+  "message": "...",
+  "history": [],
+  "supportLevel": 0
+}
+```
+
+Nếu chưa cấu hình API, app sẽ tự động dùng fallback local (rule-based) để demo.
 
 ## Build production
 

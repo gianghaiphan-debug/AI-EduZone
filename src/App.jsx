@@ -1,68 +1,25 @@
 import { useMemo, useState } from 'react';
 import { InlineMath, BlockMath } from 'react-katex';
 import Tesseract from 'tesseract.js';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { curriculumData } from './curriculum';
-import { firebaseSetupNote, getFirebaseDb } from './firebase';
+import { callChatApi } from './chatApi';
 
 const bots = [
-  { id: 'tutor', title: 'Chatbot 1 · Gia sư định hướng' },
-  { id: 'detector', title: 'Chatbot 2 · Kiểm tra nghi ngờ AI' },
-  { id: 'probe', title: 'Chatbot 3 · Truy vấn điểm nghẽn kiến thức' }
+  { id: 'tutor', title: 'Chatbot 1 - Gia sư định hướng' },
+  { id: 'detector', title: 'Chatbot 2 - Kiểm tra nghi ngờ AI' },
+  { id: 'probe', title: 'Chatbot 3 - Truy vấn điểm nghẽn' }
 ];
 
-const initialState = {
-  subject: 'math',
-  grade: '6',
-  input: '',
-  processingOcr: false,
-  history: [],
-  tutorSupportCount: 0,
-  lastQuestion: ''
-};
-
-const STORAGE_KEY = 'ai-eduzone-conversations-v1';
-
-const loadHistory = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-};
-
-const saveHistory = (data) => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-};
+const STORAGE_KEY = 'ai-eduzone-sessions-v2';
 
 const isEducationRelated = (message) => {
   const text = message.toLowerCase();
   const keywords = [
-    'toán',
-    'ngữ văn',
-    'văn',
-    'lớp',
-    'bài',
-    'bài tập',
-    'đề',
-    'phương trình',
-    'hình',
-    'thơ',
-    'đoạn văn',
-    'giải thích',
-    'học',
-    'kiến thức',
-    'latex',
-    'phân tích',
-    'chứng minh',
-    'hàm số',
-    'xác suất'
+    'toán', 'ngữ văn', 'văn', 'lớp', 'bài', 'bài tập', 'đề', 'phương trình', 'hình', 'thơ',
+    'đoạn văn', 'giải thích', 'học', 'kiến thức', 'latex', 'phân tích', 'chứng minh', 'hàm số', 'xác suất'
   ];
   return keywords.some((keyword) => text.includes(keyword));
 };
-
 
 const outOfScopeKeywords = {
   math: {
@@ -72,350 +29,285 @@ const outOfScopeKeywords = {
     9: ['đạo hàm', 'tích phân', 'ma trận', 'số phức']
   },
   literature: {
-    6: ['phong cách ngôn ngữ báo chí', 'nghị luận xã hội chuyên sâu', 'thi pháp học'],
-    7: ['phong cách ngôn ngữ báo chí', 'thi pháp học', 'nghị luận văn học chuyên sâu'],
-    8: ['thi pháp học', 'lí luận văn học đại học'],
+    6: ['thi pháp học', 'nghị luận văn học chuyên sâu'],
+    7: ['thi pháp học', 'nghị luận văn học chuyên sâu'],
+    8: ['lí luận văn học đại học'],
     9: ['lí luận văn học đại học']
   }
 };
 
-const isOutOfScopeByGrade = (message, subject, grade) => {
-  const text = message.toLowerCase();
-  const items = outOfScopeKeywords[subject]?.[grade] ?? [];
-  return items.find((item) => text.includes(item));
-};
+const newSession = () => ({
+  id: crypto.randomUUID(),
+  title: 'Cuộc trò chuyện mới',
+  botId: 'tutor',
+  subject: 'math',
+  grade: '6',
+  history: [
+    {
+      who: 'AI-EduZone',
+      text: 'Chào mừng đến với AI-EduZone. Hãy chọn chatbot, môn học, lớp và nhập nội dung để bắt đầu.'
+    }
+  ],
+  tutorSupportCount: 0,
+  lastQuestion: ''
+});
 
-const nonLearningReply = {
-  who: 'AI-EduZone',
-  text: 'Mình chỉ hỗ trợ các câu hỏi học tập cho Toán/Ngữ văn THCS (lớp 6-9) theo vai trò định hướng, không giải hộ. Bạn hãy gửi đề bài hoặc phần kiến thức đang vướng nhé.'
+const loadSessions = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [newSession()];
+    const data = JSON.parse(raw);
+    return Array.isArray(data) && data.length ? data : [newSession()];
+  } catch {
+    return [newSession()];
+  }
 };
 
 const inferPrompt = (botId, message, subject, grade, supportCount = 0) => {
   if (!isEducationRelated(message)) {
-    return nonLearningReply;
-  }
-
-  const outOfScopeTopic = isOutOfScopeByGrade(message, subject, grade);
-  const curriculum = curriculumData[subject].grades[grade];
-
-  if (outOfScopeTopic) {
     return {
       who: 'AI-EduZone',
-      text: `Nội dung “${outOfScopeTopic}” đang vượt khung chương trình ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}. Mình sẽ không trả lời vượt chương trình. Hãy quay lại các mục trọng tâm lớp ${grade}:\n- ${curriculum.join('\n- ')}`
+      text: 'Mình chỉ hỗ trợ câu hỏi học tập Toán/Ngữ văn lớp 6-9 và sẽ định hướng thay vì giải hộ. Bạn hãy gửi nội dung học tập nhé.'
+    };
+  }
+
+  const outTopic = (outOfScopeKeywords[subject]?.[grade] ?? []).find((k) => message.toLowerCase().includes(k));
+  const curriculum = curriculumData[subject].grades[grade];
+
+  if (outTopic) {
+    return {
+      who: 'AI-EduZone',
+      text: `Nội dung “${outTopic}” vượt khung lớp ${grade}. Mình chỉ hỗ trợ trong chương trình hiện tại:\n- ${curriculum.join('\n- ')}`
     };
   }
 
   if (botId === 'tutor') {
-    const detailedHint =
-      supportCount > 0
-        ? `\n\nMức hỗ trợ ${supportCount + 1}:\n- Tách đề thành dữ kiện / yêu cầu.\n- Viết 1 bước ngắn em làm được trước.\n- Tự kiểm bằng cách thay lại kết quả vào đề.\n- Nếu là Toán, hãy trình bày công thức bằng LaTeX rõ ràng.`
-        : '';
-
+    const depthHint = supportCount > 0
+      ? `\n\nMức hỗ trợ ${supportCount + 1}:\n- Xác định chính xác dữ kiện đề bài.\n- Chọn 1 bước em làm được trước.\n- Kiểm tra lại từng bước trước khi sang bước tiếp.`
+      : '';
     return {
-      who: 'AI-EduZone Tutor',
-      text: `Mình sẽ không đưa đáp án trực tiếp. Với ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}, bạn hãy thử làm theo 3 bước:\n1) Xác định dữ kiện và yêu cầu đề.\n2) Chọn phương pháp phù hợp chương trình GDPT 2018:\n- ${curriculum.join('\n- ')}\n3) Viết lời giải nháp và tự kiểm tra.\n\nGợi ý hướng đi cho câu hỏi của bạn: “${message.slice(0, 240)}”.${detailedHint}`
+      who: 'Gia sư định hướng',
+      text: `Mình không đưa đáp án trực tiếp. Với ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}, em làm theo:\n1) Tóm tắt đề bằng lời của em.\n2) Chọn hướng làm theo chuẩn GDPT 2018:\n- ${curriculum.join('\n- ')}\n3) Viết nháp và tự kiểm tra.${depthHint}`
     };
   }
 
   if (botId === 'detector') {
     return {
-      who: 'AI-EduZone AI-check',
-      text: `Phân tích nghi ngờ can thiệp AI cho ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}:\n- Độ đều văn phong bất thường: Trung bình\n- Dấu hiệu thiếu bước tư duy cá nhân: Có thể có\n- Mức phù hợp chuẩn kiến thức lớp ${grade}: cần đối chiếu theo các yêu cầu:\n- ${curriculum.join('\n- ')}\n\nKhuyến nghị: yêu cầu học sinh giải thích lại từng bước bằng ngôn ngữ của mình. Không phân tích vượt yêu cầu cần đạt của lớp đã chọn.`
+      who: 'Kiểm tra nghi ngờ AI',
+      text: `Đang đối chiếu bài làm theo ${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}:\n- Độ phù hợp chuẩn kiến thức: cần kiểm tra theo mục tiêu lớp.\n- Dấu hiệu can thiệp AI: xem mức tự nhiên của lập luận và lỗi cá nhân.\n- Không đánh giá vượt khung lớp đã chọn.\n\nChuẩn đối chiếu:\n- ${curriculum.join('\n- ')}`
     };
   }
 
   return {
-    who: 'AI-EduZone Probe',
-    text: `Để kiểm tra bạn đã hiểu bài chưa, hãy trả lời nhanh 3 câu truy vấn ngược (${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}):\n1) Em đang vướng nhất ở khâu nào?\n2) Vì sao em chọn cách làm hiện tại?\n3) Nếu thay dữ kiện/chủ đề thì em điều chỉnh thế nào?\n\nĐối chiếu trọng tâm chương trình (không trả lời vượt khung lớp đã chọn):\n- ${curriculum.join('\n- ')}`
+    who: 'Truy vấn điểm nghẽn',
+    text: `Để kiểm tra em hiểu bài chưa (${subject === 'math' ? 'Toán' : 'Ngữ văn'} lớp ${grade}), hãy trả lời:\n1) Em kẹt ở bước nào?\n2) Vì sao chọn cách làm này?\n3) Nếu đổi dữ kiện/chủ đề thì em đổi ra sao?\n\nMốc kiến thức cùng lớp:\n- ${curriculum.join('\n- ')}`
   };
 };
 
 function App() {
-  const saved = useMemo(() => loadHistory(), []);
-  const db = useMemo(() => getFirebaseDb(), []);
-  const [activeBot, setActiveBot] = useState('tutor');
-  const [firebaseLoading, setFirebaseLoading] = useState(false);
-  const [firebaseMessage, setFirebaseMessage] = useState(firebaseSetupNote);
-  const [studentId, setStudentId] = useState('student-demo-001');
+  const initialSessions = useMemo(() => loadSessions(), []);
+  const [sessions, setSessions] = useState(initialSessions);
+  const [activeId, setActiveId] = useState(initialSessions[0].id);
+  const [composer, setComposer] = useState('');
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [sending, setSending] = useState(false);
 
-  const [state, setState] = useState(() => ({
-    tutor: saved.tutor ?? { ...initialState },
-    detector: saved.detector ?? { ...initialState },
-    probe: saved.probe ?? { ...initialState }
-  }));
+  const activeSession = sessions.find((s) => s.id === activeId) ?? sessions[0];
 
-  const botState = state[activeBot];
-
-  const updateBotState = (updates) => {
-    setState((prev) => {
-      const next = {
-        ...prev,
-        [activeBot]: {
-          ...prev[activeBot],
-          ...updates
-        }
-      };
-      saveHistory(next);
-      return next;
-    });
+  const persist = (next) => {
+    setSessions(next);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   };
 
-  const onSend = () => {
-    if (!botState.input.trim()) return;
-    const question = botState.input.trim();
+  const updateActive = (patch) => {
+    const next = sessions.map((s) => (s.id === activeSession.id ? { ...s, ...patch } : s));
+    persist(next);
+  };
+
+  const sendMessage = async () => {
+    if (!composer.trim() || sending) return;
+    const question = composer.trim();
     const userMessage = { who: 'Bạn', text: question };
-    const botMessage = inferPrompt(activeBot, question, botState.subject, botState.grade, 0);
 
-    const commonUpdates = {
-      input: '',
-      history: [...botState.history, userMessage, botMessage]
-    };
+    setSending(true);
+    try {
+      const apiReply = await callChatApi({
+        botId: activeSession.botId,
+        subject: activeSession.subject,
+        grade: activeSession.grade,
+        message: question,
+        history: activeSession.history,
+        supportLevel: 0
+      });
 
-    if (activeBot === 'tutor') {
-      updateBotState({ ...commonUpdates, tutorSupportCount: 0, lastQuestion: question });
-      return;
+      const botReply = apiReply
+        ? { who: bots.find((b) => b.id === activeSession.botId)?.title ?? 'AI-EduZone', text: apiReply }
+        : inferPrompt(activeSession.botId, question, activeSession.subject, activeSession.grade, 0);
+
+      updateActive({
+        history: [...activeSession.history, userMessage, botReply],
+        lastQuestion: activeSession.botId === 'tutor' ? question : activeSession.lastQuestion,
+        tutorSupportCount: activeSession.botId === 'tutor' ? 0 : activeSession.tutorSupportCount,
+        title: activeSession.title === 'Cuộc trò chuyện mới' ? question.slice(0, 28) : activeSession.title
+      });
+      setComposer('');
+    } catch (error) {
+      const fallback = inferPrompt(activeSession.botId, question, activeSession.subject, activeSession.grade, 0);
+      updateActive({ history: [...activeSession.history, userMessage, fallback] });
+    } finally {
+      setSending(false);
     }
-
-    updateBotState(commonUpdates);
   };
 
-  const onNeedMoreHelp = () => {
-    if (activeBot !== 'tutor' || !botState.lastQuestion) return;
-    const nextSupportCount = botState.tutorSupportCount + 1;
-    if (nextSupportCount > 2) return;
+  const needMoreHelp = async () => {
+    if (activeSession.botId !== 'tutor' || !activeSession.lastQuestion || activeSession.tutorSupportCount >= 2 || sending) return;
+    const nextCount = activeSession.tutorSupportCount + 1;
 
-    const tutorMessage = inferPrompt('tutor', botState.lastQuestion, botState.subject, botState.grade, nextSupportCount);
+    setSending(true);
+    try {
+      const apiReply = await callChatApi({
+        botId: 'tutor',
+        subject: activeSession.subject,
+        grade: activeSession.grade,
+        message: activeSession.lastQuestion,
+        history: activeSession.history,
+        supportLevel: nextCount
+      });
 
-    updateBotState({
-      tutorSupportCount: nextSupportCount,
-      history: [...botState.history, tutorMessage]
-    });
+      const extra = apiReply
+        ? { who: 'Gia sư định hướng', text: apiReply }
+        : inferPrompt('tutor', activeSession.lastQuestion, activeSession.subject, activeSession.grade, nextCount);
+
+      updateActive({ tutorSupportCount: nextCount, history: [...activeSession.history, extra] });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const addSession = () => {
+    const created = newSession();
+    const next = [created, ...sessions];
+    persist(next);
+    setActiveId(created.id);
+    setComposer('');
   };
 
   const processImage = async (file) => {
     if (!file) return;
-    updateBotState({ processingOcr: true });
+    setOcrLoading(true);
     const { data } = await Tesseract.recognize(file, 'vie+eng');
-    updateBotState({
-      processingOcr: false,
-      input: `${botState.input}\n${data.text}`.trim()
-    });
-  };
-
-  const syncToFirebase = async () => {
-    if (!db) {
-      setFirebaseMessage('Thiếu cấu hình Firebase. Hãy thêm VITE_FIREBASE_* vào file .env.');
-      return;
-    }
-    if (!studentId.trim()) {
-      setFirebaseMessage('Vui lòng nhập studentId trước khi đồng bộ.');
-      return;
-    }
-
-    setFirebaseLoading(true);
-    try {
-      await Promise.all(
-        bots.map((bot) => {
-          const ref = doc(db, 'students', studentId.trim(), 'conversations', bot.id);
-          return setDoc(
-            ref,
-            {
-              botId: bot.id,
-              subject: state[bot.id].subject,
-              grade: state[bot.id].grade,
-              history: state[bot.id].history,
-              tutorSupportCount: state[bot.id].tutorSupportCount ?? 0,
-              lastQuestion: state[bot.id].lastQuestion ?? '',
-              updatedAt: serverTimestamp()
-            },
-            { merge: true }
-          );
-        })
-      );
-      setFirebaseMessage('Đã đồng bộ hội thoại lên Firebase thành công.');
-    } catch (error) {
-      setFirebaseMessage(`Đồng bộ thất bại: ${error.message}`);
-    } finally {
-      setFirebaseLoading(false);
-    }
-  };
-
-  const loadFromFirebase = async () => {
-    if (!db) {
-      setFirebaseMessage('Thiếu cấu hình Firebase. Không thể tải hội thoại cloud.');
-      return;
-    }
-    if (!studentId.trim()) {
-      setFirebaseMessage('Vui lòng nhập studentId trước khi tải dữ liệu.');
-      return;
-    }
-
-    setFirebaseLoading(true);
-    try {
-      const entries = await Promise.all(
-        bots.map(async (bot) => {
-          const ref = doc(db, 'students', studentId.trim(), 'conversations', bot.id);
-          const snap = await getDoc(ref);
-          return [bot.id, snap.exists() ? snap.data() : null];
-        })
-      );
-
-      setState((prev) => {
-        const next = { ...prev };
-        for (const [botId, cloud] of entries) {
-          if (!cloud) continue;
-          next[botId] = {
-            ...next[botId],
-            subject: cloud.subject ?? next[botId].subject,
-            grade: cloud.grade ?? next[botId].grade,
-            history: Array.isArray(cloud.history) ? cloud.history : next[botId].history,
-            tutorSupportCount: cloud.tutorSupportCount ?? next[botId].tutorSupportCount,
-            lastQuestion: cloud.lastQuestion ?? next[botId].lastQuestion
-          };
-        }
-        saveHistory(next);
-        return next;
-      });
-
-      setFirebaseMessage('Đã tải hội thoại từ Firebase về local.');
-    } catch (error) {
-      setFirebaseMessage(`Tải dữ liệu thất bại: ${error.message}`);
-    } finally {
-      setFirebaseLoading(false);
-    }
+    setComposer((prev) => `${prev}\n${data.text}`.trim());
+    setOcrLoading(false);
   };
 
   return (
-    <div className="layout">
-      <header className="hero">
-        <h1>AI-EduZone · Không gian tự học an toàn cho học sinh</h1>
-        <p>
-          Webapp tích hợp 3 chatbot học tập độc lập. Triết lý chung: <strong>AI chỉ định hướng, không giải hộ</strong>,
-          giúp học sinh tự phát triển năng lực học tập và tự đánh giá.
-        </p>
-        <p>
-          Hỗ trợ nhập văn bản, OCR từ ảnh, hiển thị công thức bằng LaTeX (ví dụ <InlineMath math="x^2 + y^2 = z^2" />)
-          và đối chiếu chuẩn chương trình GDPT 2018 cho Toán/Ngữ văn lớp 6-9.
-        </p>
+    <div className="page">
+      <header className="topbar">
+        <div className="brand">
+          <div className="logo">AI</div>
+          <div>
+            <strong>AI-EduZone</strong>
+            <p>Không gian tự học an toàn cho học sinh</p>
+          </div>
+        </div>
+        <nav>
+          <a href="#">Tính năng</a>
+          <a href="#">Dùng thử</a>
+          <a href="#">Giới thiệu</a>
+        </nav>
       </header>
 
-      <section className="firebase-box">
-        <h3>Hội thoại đã lưu trên Firebase</h3>
-        <p>
-          {firebaseSetupNote}. Nếu bạn dùng đoạn Java Admin SDK như ví dụ serviceAccount, hãy đặt ở backend server,
-          frontend chỉ gọi API hoặc dùng Firebase Web SDK với rule bảo mật phù hợp.
-        </p>
-        <div className="firebase-actions">
-          <input
-            value={studentId}
-            onChange={(e) => setStudentId(e.target.value)}
-            placeholder="studentId (ví dụ: hs-lop8-a)"
-          />
-          <button type="button" onClick={syncToFirebase} disabled={firebaseLoading}>
-            {firebaseLoading ? 'Đang đồng bộ...' : 'Đồng bộ lên Firebase'}
-          </button>
-          <button type="button" onClick={loadFromFirebase} disabled={firebaseLoading} className="secondary">
-            Tải hội thoại từ Firebase
-          </button>
+      <section className="hero">
+        <div>
+          <div className="chips">
+            <span>Không giải hộ</span><span>Định hướng tự học</span><span>Giao diện trực quan</span>
+          </div>
+          <h1>Web app học tập hiện đại, rõ ràng, dễ dùng</h1>
+          <p>
+            AI-EduZone hỗ trợ học sinh tự học theo hướng có định hướng, hạn chế phụ thuộc AI và tăng khả năng tự giải quyết vấn đề.
+          </p>
+          <p>Ví dụ LaTeX: <InlineMath math="x^2 + y^2 = z^2" /></p>
         </div>
-        <small>{firebaseMessage}</small>
+        <div className="mock-card">
+          <h3>Minh hoạ chatbot</h3>
+          <p>Đối chiếu theo môn/lớp để không trả lời vượt khung chương trình.</p>
+          <BlockMath math="\nabla (x^2) = 2x" />
+        </div>
       </section>
 
-      <section className="bot-tabs">
-        {bots.map((bot) => (
-          <button
-            key={bot.id}
-            type="button"
-            className={activeBot === bot.id ? 'active' : ''}
-            onClick={() => setActiveBot(bot.id)}
-          >
-            {bot.title}
-          </button>
-        ))}
-      </section>
-
-      <section className="panel">
-        <div className="controls">
-          <label>
-            Môn học
-            <select value={botState.subject} onChange={(e) => updateBotState({ subject: e.target.value })}>
-              <option value="math">Toán</option>
-              <option value="literature">Ngữ văn</option>
-            </select>
-          </label>
-
-          <label>
-            Khối lớp
-            <select value={botState.grade} onChange={(e) => updateBotState({ grade: e.target.value })}>
-              <option value="6">6</option>
-              <option value="7">7</option>
-              <option value="8">8</option>
-              <option value="9">9</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="curriculum">
-          <h3>Đối chiếu chuẩn kiến thức (GDPT 2018)</h3>
-          <ul>
-            {curriculumData[botState.subject].grades[botState.grade].map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-
-        <textarea
-          rows={5}
-          placeholder="Nhập câu hỏi của bạn (hỗ trợ cả LaTeX như: \\frac{a}{b})"
-          value={botState.input}
-          onChange={(e) => updateBotState({ input: e.target.value })}
-        />
-
-        <div className="math-preview">
-          <p>Xem trước công thức (LaTeX block):</p>
-          <BlockMath math={botState.input.includes('\\') ? botState.input : 'a^2+b^2=c^2'} />
-        </div>
-
-        <div className="actions">
-          <label className="upload">
-            OCR ảnh bài tập
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => processImage(e.target.files?.[0])}
-            />
-          </label>
-          <button type="button" onClick={onSend} disabled={botState.processingOcr}>
-            {botState.processingOcr ? 'Đang OCR...' : 'Gửi'}
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              updateBotState({
-                history: [],
-                tutorSupportCount: 0,
-                lastQuestion: ''
-              })
-            }
-            className="secondary"
-          >
-            Xoá hội thoại bot hiện tại
-          </button>
-          {activeBot === 'tutor' && botState.lastQuestion && botState.tutorSupportCount < 2 && (
-            <button type="button" onClick={onNeedMoreHelp} className="help-more">
-              Em chưa làm được ({2 - botState.tutorSupportCount} lượt còn lại)
+      <section className="workspace">
+        <aside className="sidebar">
+          <div className="side-head">
+            <h3>Hội thoại</h3>
+            <button type="button" onClick={addSession}>+ Mới</button>
+          </div>
+          {sessions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`session-item ${s.id === activeId ? 'active' : ''}`}
+              onClick={() => setActiveId(s.id)}
+            >
+              {s.title || 'Cuộc trò chuyện'}
             </button>
-          )}
-        </div>
-
-        <div className="history">
-          {botState.history.length === 0 && <p>Chưa có hội thoại. Hãy bắt đầu bằng một câu hỏi.</p>}
-          {botState.history.map((message, idx) => (
-            <article key={`${message.who}-${idx}`}>
-              <h4>{message.who}</h4>
-              <pre>{message.text}</pre>
-            </article>
           ))}
+        </aside>
+
+        <div className="chat-panel">
+          <div className="selectors">
+            <label>
+              Chatbot
+              <select value={activeSession.botId} onChange={(e) => updateActive({ botId: e.target.value })}>
+                {bots.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
+              </select>
+            </label>
+            <label>
+              Môn học
+              <select value={activeSession.subject} onChange={(e) => updateActive({ subject: e.target.value })}>
+                <option value="math">Toán</option>
+                <option value="literature">Ngữ văn</option>
+              </select>
+            </label>
+            <label>
+              Lớp
+              <select value={activeSession.grade} onChange={(e) => updateActive({ grade: e.target.value })}>
+                <option value="6">Lớp 6</option><option value="7">Lớp 7</option><option value="8">Lớp 8</option><option value="9">Lớp 9</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="messages">
+            {activeSession.history.map((m, idx) => (
+              <article key={`${m.who}-${idx}`} className={m.who === 'Bạn' ? 'user-msg' : 'bot-msg'}>
+                <h4>{m.who}</h4>
+                <pre>{m.text}</pre>
+              </article>
+            ))}
+          </div>
+
+          <div className="composer">
+            <textarea
+              rows={4}
+              placeholder="Nhập câu hỏi hoặc nội dung cần hỗ trợ..."
+              value={composer}
+              onChange={(e) => setComposer(e.target.value)}
+            />
+            <div className="composer-actions">
+              <label className="upload">
+                OCR ảnh
+                <input type="file" accept="image/*" onChange={(e) => processImage(e.target.files?.[0])} />
+              </label>
+              <button type="button" className="secondary" onClick={() => setComposer('')}>Xoá ô nhập</button>
+              {activeSession.botId === 'tutor' && activeSession.lastQuestion && activeSession.tutorSupportCount < 2 && (
+                <button type="button" className="secondary" onClick={needMoreHelp}>
+                  Em chưa làm được ({2 - activeSession.tutorSupportCount})
+                </button>
+              )}
+              <button type="button" className="send" onClick={sendMessage} disabled={ocrLoading || sending}>
+                {ocrLoading ? 'Đang OCR...' : sending ? 'Đang gửi...' : 'Gửi'}
+              </button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
