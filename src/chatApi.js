@@ -3,7 +3,7 @@ const API_KEY = import.meta.env.VITE_CHAT_API_KEY || '';
 const CHAT_PROVIDER = import.meta.env.VITE_CHAT_PROVIDER || 'custom';
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
-const GEMINI_MODEL = import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_MODEL = import.meta.env.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
 
 const formatHistory = (history = []) =>
   history
